@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Template 1: MyGymLog</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Firebase Dependencies -->
+    <script type="module">
+        // NOTE: We use full URLs here because this is a standalone HTML file
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
+        import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-analytics.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
+        import { getFirestore, collection, doc, addDoc, setDoc, getDocs, deleteDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
+
+        // --- 1. YOUR FIREBASE CONFIGURATION ---
+        const firebaseConfig = {
+            apiKey: "AIzaSyB65PROcFI-9FGlAvUDtSEF_E-yMhmM6o8",
+            authDomain: "mygymlog-cc00f.firebaseapp.com",
+            projectId: "mygymlog-cc00f",
+            storageBucket: "mygymlog-cc00f.firebasestorage.app",
+            messagingSenderId: "29570026024",
+            appId: "1:29570026024:web:cea91cb7af2650d32ec31d",
+            measurementId: "G-KRLZJG87NG"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const analytics = getAnalytics(app); // Added Analytics
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        
+        // We set a static App ID for your personal database path
+        // Data will be stored at: artifacts/my-personal-gym-log/users/{userId}/...
+        const appId = 'my-personal-gym-log'; 
+        
+        let userId = null;
+        let localLogs = []; // Local cache of logs for graphs
+        let saveTimeout = null; // For debouncing 1RM saves
+
+        // --- 2. AUTHENTICATION & LISTENERS ---
+        
+        // Login silently with IMPROVED ERROR HANDLING
+        signInAnonymously(auth).catch((error) => {
+            console.error("Auth Error:", error);
+            
+            let msg = "⚠️ Database connection failed.";
+            let isCritical = false;
+
+            if (error.code === 'auth/configuration-not-found') {
+                msg = "⚠️ Action Required: Go to Firebase Console > Authentication and click 'Get Started' to enable the service.";
+                isCritical = true;
+            } else if (error.code === 'auth/operation-not-allowed' || error.code === 'auth/admin-restricted-operation') {
+                msg = "⚠️ Action Required: Enable 'Anonymous' in Firebase Console > Authentication > Sign-in method.";
+                isCritical = true;
+            } else {
+                msg = `⚠️ Auth Error: ${error.message}`;
+            }
+
+            showToast(msg, isCritical);
+        });
+
+        // Once logged in, start listening to data
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                userId = user.uid;
+                console.log("Connected as:", userId);
+                showToast("✅ Connected to Database");
+                
+                // A. Listen to Workout Logs (Real-time)
+                const logsRef = collection(db, 'artifacts', appId, 'users', userId, 'workout_logs');
+                onSnapshot(logsRef, (snapshot) => {
+                    localLogs = [];
+                    snapshot.forEach((doc) => {
+                        localLogs.push({ id: doc.id, ...doc.data() });
+                    });
+                }, (error) => {
+                    console.error("Error fetching logs:", error);
+                    if (error.code === 'permission-denied') {
+                        showToast("⚠️ Permission Denied: Check Security Rules", true);
+                    }
+                });
+
+                // B. Listen to User Stats (1RMs)
+                const statsRef = doc(db, 'artifacts', appId, 'users', userId, 'settings', 'stats');
+                onSnapshot(statsRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        if (document.activeElement.tagName !== 'INPUT') {
+                            if(data.squat) document.getElementById('squatMax').value = data.squat;
+                            if(data.bench) document.getElementById('benchMax').value = data.bench;
+                            if(data.dead) document.getElementById('deadMax').value = data.dead;
+                            if(data.ohp) document.getElementById('ohpMax').value = data.ohp;
+                            window.calculateWeights(false); 
+                        }
+                    }
+                });
+            }
+        });
+
+        // --- 3. EXPOSE FUNCTIONS TO WINDOW (For HTML onclick) ---
+
+        // Save a day's log to Firestore
+        window.saveLog = async function(cardId, dayName) {
+            if (!userId) return showToast("⚠️ Waiting for connection...", true);
+
+            const card = document.getElementById(cardId);
+            const rows = card.querySelectorAll('.exercise-row');
+            const today = new Date().toISOString().split('T')[0];
+            let count = 0;
+
+            const logsRef = collection(db, 'artifacts', appId, 'users', userId, 'workout_logs');
+
+            for (const row of rows) {
+                const name = row.dataset.name;
+                const weight = row.querySelector('.log-weight').value;
+                const reps = row.querySelector('.log-reps').value;
+                const rpe = row.querySelector('.log-rpe').value;
+
+                if (weight && reps) {
+                    try {
+                        await addDoc(logsRef, {
+                            date: today,
+                            exercise: name,
+                            weight: parseFloat(weight),
+                            reps: parseInt(reps),
+                            rpe: rpe || '-',
+                            timestamp: Date.now() 
+                        });
+                        count++;
+                        row.querySelector('.log-weight').value = '';
+                        row.querySelector('.log-rpe').value = '';
+                    } catch (e) {
+                        console.error("Error adding doc:", e);
+                        showToast("⚠️ Error saving: " + e.message, true);
+                    }
+                }
+            }
+
+            if (count > 0) {
+                showToast(`✅ Saved ${count} exercises to cloud!`);
+            } else {
+                showToast('⚠️ Enter Weight & Reps first.');
+            }
+        };
+
+        // Calculate target weights & Auto-save 1RMs
+        window.calculateWeights = function(shouldSave = true) {
+            const squatMax = parseFloat(document.getElementById('squatMax').value) || 0;
+            const benchMax = parseFloat(document.getElementById('benchMax').value) || 0;
+            const deadMax = parseFloat(document.getElementById('deadMax').value) || 0;
+            const ohpMax = parseFloat(document.getElementById('ohpMax').value) || 0;
+
+            const maxes = { 'squat': squatMax, 'bench': benchMax, 'dead': deadMax, 'ohp': ohpMax };
+            
+            // UI Update
+            const targets = document.querySelectorAll('span[data-lift], div[data-lift]');
+            targets.forEach(target => {
+                const lift = target.getAttribute('data-lift');
+                const pct = parseFloat(target.getAttribute('data-pct'));
+                
+                if (maxes[lift] > 0) {
+                    let weight = maxes[lift] * pct;
+                    weight = Math.round(weight / 2.5) * 2.5; 
+                    target.textContent = weight + " kg";
+                } else {
+                    target.textContent = "-";
+                }
+            });
+
+            // Debounced Save to Cloud
+            if (shouldSave && userId) {
+                clearTimeout(saveTimeout);
+                saveTimeout = setTimeout(() => {
+                    const statsRef = doc(db, 'artifacts', appId, 'users', userId, 'settings', 'stats');
+                    setDoc(statsRef, maxes, { merge: true }).then(() => {
+                        console.log("Stats synced to cloud");
+                    });
+                }, 1000); 
+            }
+        };
+
+        // Predict 1RM from history
+        window.predict1RM = function(exerciseName, inputId) {
+            const logs = localLogs.filter(l => l.exercise === exerciseName);
+            
+            if (logs.length === 0) {
+                showToast(`No logs found for ${exerciseName}.`);
+                return;
+            }
+
+            let maxEst1RM = 0;
+            logs.forEach(l => {
+                const est = l.weight * (1 + l.reps / 30);
+                if (est > maxEst1RM) maxEst1RM = est;
+            });
+
+            const roundedMax = Math.round(maxEst1RM);
+            document.getElementById(inputId).value = roundedMax;
+            
+            window.calculateWeights(true);
+            showToast(`✨ Updated 1RM to ${roundedMax}kg!`);
+        };
+
+        // Delete all data
+        window.clearData = async function() {
+            if (!userId) return;
+            if(confirm("Are you sure? This deletes PERMANENTLY from the database.")) {
+                const logsRef = collection(db, 'artifacts', appId, 'users', userId, 'workout_logs');
+                const snapshot = await getDocs(logsRef);
+                
+                snapshot.forEach(async (docSnap) => {
+                    await deleteDoc(doc(db, 'artifacts', appId, 'users', userId, 'workout_logs', docSnap.id));
+                });
+                
+                const statsRef = doc(db, 'artifacts', appId, 'users', userId, 'settings', 'stats');
+                await setDoc(statsRef, { squat:0, bench:0, dead:0, ohp:0 });
+                
+                document.getElementById('squatMax').value = 0;
+                document.getElementById('benchMax').value = 0;
+                document.getElementById('deadMax').value = 0;
+                document.getElementById('ohpMax').value = 0;
+                window.calculateWeights(false);
+
+                showToast("🗑️ Cloud data cleared.");
+            }
+        };
+
+        // Graphing 
+        let chartInstance = null;
+        window.showGraph = function(exerciseName) {
+            const logs = localLogs.filter(l => l.exercise === exerciseName);
+            
+            if (logs.length === 0) {
+                showToast(`No history for ${exerciseName} yet.`);
+                return;
+            }
+
+            logs.sort((a, b) => new Date(a.date) - new Date(b.date) || a.timestamp - b.timestamp);
+
+            const labels = logs.map(l => l.date);
+            const dataPoints = logs.map(l => Math.round(l.weight * (1 + l.reps / 30)));
+
+            document.getElementById('graphTitle').textContent = `${exerciseName} (Est. 1RM)`;
+            document.getElementById('graphModal').classList.remove('hidden');
+
+            const ctx = document.getElementById('progressChart').getContext('2d');
+            if (chartInstance) chartInstance.destroy();
+
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Est. 1RM (kg)',
+                        data: dataPoints,
+                        borderColor: '#2563EB',
+                        backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                        tension: 0.3,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: { y: { beginAtZero: false } }
+                }
+            });
+        };
+
+        window.closeGraph = function() {
+            document.getElementById('graphModal').classList.add('hidden');
+        };
+
+        // Enhanced Toast to handle persistent error messages
+        window.showToast = function(msg, isCritical = false) {
+            const toast = document.getElementById('toast');
+            toast.textContent = msg;
+            
+            // Red for critical errors, Dark gray for normal
+            if (isCritical) {
+                toast.className = "fixed bottom-4 right-4 bg-red-600 text-white px-6 py-4 rounded shadow-lg transform transition-all duration-300 z-50 max-w-sm";
+            } else {
+                toast.className = "fixed bottom-4 right-4 bg-gray-800 text-white px-6 py-3 rounded shadow-lg transform transition-all duration-300 z-50";
+            }
+            
+            toast.classList.remove('translate-y-20', 'opacity-0');
+            
+            // Do not auto-hide if it involves "Action Required"
+            if (!msg.includes("Action Required")) {
+                setTimeout(() => {
+                    toast.classList.add('translate-y-20', 'opacity-0');
+                }, 4000);
+            }
+        };
+        
+        window.calculateWeights(false);
+    </script>
+    
+    <style>
+        ::-webkit-scrollbar { width: 0px; background: transparent; }
+        @media print {
+            .no-print { display: none !important; }
+            body { background: white; color: black; }
+            input { border: none; border-bottom: 1px solid #ccc; background: transparent; }
+            .card { break-inside: avoid; border: 1px solid #ccc; shadow: none; }
+        }
+        .clickable-exercise { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 4px; }
+        .clickable-exercise:hover { color: #2563EB; }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 font-sans p-2 md:p-6 pb-20">
+
+    <div class="max-w-5xl mx-auto">
+        
+        <!-- Header & Calculator -->
+        <div class="bg-white rounded-lg shadow-md p-4 md:p-6 mb-6 no-print">
+            <div class="flex justify-between items-center mb-4">
+                <h1 class="text-2xl md:text-3xl font-bold text-blue-900">MyGymLog</h1>
+                <button onclick="clearData()" class="text-xs text-red-400 hover:text-red-600 underline">Reset Cloud Data</button>
+            </div>
+            
+            <p class="text-gray-600 mb-4 text-sm">
+                Inputs auto-save to database. Click <span class="font-bold text-purple-600">🔮</span> to estimate 1RM from history.
+            </p>
+            
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <!-- Squat Input -->
+                <div class="relative group">
+                    <label class="block text-xs font-semibold text-gray-500 uppercase">Squat 1RM</label>
+                    <div class="flex items-center mt-1">
+                        <input type="number" id="squatMax" value="0" class="w-full p-2 border border-gray-300 rounded-l focus:ring-2 focus:ring-blue-500" oninput="calculateWeights(true)">
+                        <button onclick="predict1RM('Squat', 'squatMax')" class="bg-purple-100 hover:bg-purple-200 text-purple-700 p-2 rounded-r border border-l-0 border-gray-300 text-sm" title="Predict from History">🔮</button>
+                    </div>
+                </div>
+                <!-- Bench Input -->
+                <div class="relative group">
+                    <label class="block text-xs font-semibold text-gray-500 uppercase">Bench 1RM</label>
+                    <div class="flex items-center mt-1">
+                        <input type="number" id="benchMax" value="0" class="w-full p-2 border border-gray-300 rounded-l focus:ring-2 focus:ring-blue-500" oninput="calculateWeights(true)">
+                        <button onclick="predict1RM('Bench Press', 'benchMax')" class="bg-purple-100 hover:bg-purple-200 text-purple-700 p-2 rounded-r border border-l-0 border-gray-300 text-sm" title="Predict from History">🔮</button>
+                    </div>
+                </div>
+                <!-- Deadlift Input -->
+                <div class="relative group">
+                    <label class="block text-xs font-semibold text-gray-500 uppercase">Deadlift 1RM</label>
+                    <div class="flex items-center mt-1">
+                        <input type="number" id="deadMax" value="0" class="w-full p-2 border border-gray-300 rounded-l focus:ring-2 focus:ring-blue-500" oninput="calculateWeights(true)">
+                        <button onclick="predict1RM('Deadlift', 'deadMax')" class="bg-purple-100 hover:bg-purple-200 text-purple-700 p-2 rounded-r border border-l-0 border-gray-300 text-sm" title="Predict from History">🔮</button>
+                    </div>
+                </div>
+                <!-- OHP Input -->
+                <div class="relative group">
+                    <label class="block text-xs font-semibold text-gray-500 uppercase">OHP 1RM</label>
+                    <div class="flex items-center mt-1">
+                        <input type="number" id="ohpMax" value="0" class="w-full p-2 border border-gray-300 rounded-l focus:ring-2 focus:ring-blue-500" oninput="calculateWeights(true)">
+                        <button onclick="predict1RM('Overhead Press', 'ohpMax')" class="bg-purple-100 hover:bg-purple-200 text-purple-700 p-2 rounded-r border border-l-0 border-gray-300 text-sm" title="Predict from History">🔮</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- WORKOUTS GRID -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+            <!-- DAY A -->
+            <div class="card bg-white rounded-lg shadow-md overflow-hidden" id="day-a">
+                <div class="bg-blue-800 text-white p-3 flex justify-between items-center">
+                    <h2 class="font-bold text-lg">Day A: Upper (Bench Focus)</h2>
+                    <span class="text-xs bg-blue-700 px-2 py-1 rounded">Tier 1</span>
+                </div>
+                <div class="p-2 overflow-x-auto">
+                    <table class="w-full text-sm text-left">
+                        <thead class="bg-gray-50 text-gray-600 font-medium border-b">
+                            <tr>
+                                <th class="py-2 px-1 w-32">Exercise</th>
+                                <th class="py-2 px-1 w-24">Goal</th>
+                                <th class="py-2 px-1">Log (Kg / Reps / RPE)</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-100">
+                            <!-- T1 -->
+                            <tr class="exercise-row" data-name="Bench Press">
+                                <td class="py-3 px-1">
+                                    <span class="clickable-exercise font-bold text-blue-700" onclick="showGraph('Bench Press')">Bench Press</span>
+                                </td>
+                                <td class="px-1 text-xs">
+                                    <div class="font-bold">5 x 3</div>
+                                    <div class="text-blue-600 font-bold" data-lift="bench" data-pct="0.85">-</div>
+                                </td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="3">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <!-- T2 -->
+                            <tr class="exercise-row" data-name="Overhead Press">
+                                <td class="py-3 px-1">
+                                    <span class="clickable-exercise font-medium" onclick="showGraph('Overhead Press')">Overhead Press</span>
+                                </td>
+                                <td class="px-1 text-xs">
+                                    <div class="font-bold">3 x 8-10</div>
+                                    <div class="text-blue-600 font-bold" data-lift="ohp" data-pct="0.70">-</div>
+                                </td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="10">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <!-- T3 -->
+                            <tr class="exercise-row" data-name="Barbell Row">
+                                <td class="py-3 px-1"><span class="clickable-exercise" onclick="showGraph('Barbell Row')">Barbell Row</span></td>
+                                <td class="px-1 text-xs">3x12 (RPE8)</td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="12">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <tr class="exercise-row" data-name="Lat Pulldown">
+                                <td class="py-3 px-1"><span class="clickable-exercise" onclick="showGraph('Lat Pulldown')">Lat Pulldown</span></td>
+                                <td class="px-1 text-xs">3x12 (RPE9)</td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="12">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <tr class="exercise-row" data-name="Tricep Pushdown">
+                                <td class="py-3 px-1"><span class="clickable-exercise" onclick="showGraph('Tricep Pushdown')">Tricep Pushdown</span></td>
+                                <td class="px-1 text-xs">3x15 (RPE9)</td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="15">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <tr class="exercise-row" data-name="Lateral Raise">
+                                <td class="py-3 px-1"><span class="clickable-exercise" onclick="showGraph('Lateral Raise')">Lateral Raise</span></td>
+                                <td class="px-1 text-xs">3x15 (RPE9)</td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="15">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <div class="mt-4 flex justify-end no-print">
+                        <button onclick="saveLog('day-a', 'Day A')" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded shadow">
+                            💾 Save Day A
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- DAY B -->
+            <div class="card bg-white rounded-lg shadow-md overflow-hidden" id="day-b">
+                <div class="bg-blue-800 text-white p-3 flex justify-between items-center">
+                    <h2 class="font-bold text-lg">Day B: Lower (Squat Focus)</h2>
+                    <span class="text-xs bg-blue-700 px-2 py-1 rounded">Tier 1</span>
+                </div>
+                <div class="p-2 overflow-x-auto">
+                    <table class="w-full text-sm text-left">
+                        <thead class="bg-gray-50 text-gray-600 font-medium border-b">
+                            <tr>
+                                <th class="py-2 px-1 w-32">Exercise</th>
+                                <th class="py-2 px-1 w-24">Goal</th>
+                                <th class="py-2 px-1">Log (Kg / Reps / RPE)</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-100">
+                            <!-- T1 -->
+                            <tr class="exercise-row" data-name="Squat">
+                                <td class="py-3 px-1">
+                                    <span class="clickable-exercise font-bold text-blue-700" onclick="showGraph('Squat')">Squat</span>
+                                </td>
+                                <td class="px-1 text-xs">
+                                    <div class="font-bold">5 x 3</div>
+                                    <div class="text-blue-600 font-bold" data-lift="squat" data-pct="0.85">-</div>
+                                </td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="3">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <!-- T2 -->
+                            <tr class="exercise-row" data-name="RDL">
+                                <td class="py-3 px-1">
+                                    <span class="clickable-exercise font-medium" onclick="showGraph('RDL')">RDL</span>
+                                </td>
+                                <td class="px-1 text-xs">
+                                    <div class="font-bold">3 x 10</div>
+                                    <div class="text-blue-600 font-bold" data-lift="squat" data-pct="0.60">-</div>
+                                </td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="10">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <!-- T3 -->
+                            <tr class="exercise-row" data-name="Leg Press">
+                                <td class="py-3 px-1"><span class="clickable-exercise" onclick="showGraph('Leg Press')">Leg Press</span></td>
+                                <td class="px-1 text-xs">3x12 (RPE9)</td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="12">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <tr class="exercise-row" data-name="Leg Curl">
+                                <td class="py-3 px-1"><span class="clickable-exercise" onclick="showGraph('Leg Curl')">Leg Curl</span></td>
+                                <td class="px-1 text-xs">3x15 (RPE9)</td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="15">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <div class="mt-4 flex justify-end no-print">
+                        <button onclick="saveLog('day-b', 'Day B')" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded shadow">
+                            💾 Save Day B
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- DAY C -->
+            <div class="card bg-white rounded-lg shadow-md overflow-hidden" id="day-c">
+                <div class="bg-blue-800 text-white p-3 flex justify-between items-center">
+                    <h2 class="font-bold text-lg">Day C: Upper (OHP Focus)</h2>
+                    <span class="text-xs bg-blue-700 px-2 py-1 rounded">Tier 1</span>
+                </div>
+                <div class="p-2 overflow-x-auto">
+                    <table class="w-full text-sm text-left">
+                        <thead class="bg-gray-50 text-gray-600 font-medium border-b">
+                            <tr>
+                                <th class="py-2 px-1 w-32">Exercise</th>
+                                <th class="py-2 px-1 w-24">Goal</th>
+                                <th class="py-2 px-1">Log (Kg / Reps / RPE)</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-100">
+                            <!-- T1 -->
+                            <tr class="exercise-row" data-name="Overhead Press">
+                                <td class="py-3 px-1">
+                                    <span class="clickable-exercise font-bold text-blue-700" onclick="showGraph('Overhead Press')">Overhead Press</span>
+                                </td>
+                                <td class="px-1 text-xs">
+                                    <div class="font-bold">5 x 3</div>
+                                    <div class="text-blue-600 font-bold" data-lift="ohp" data-pct="0.85">-</div>
+                                </td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="3">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <!-- T2 -->
+                            <tr class="exercise-row" data-name="Bench Press">
+                                <td class="py-3 px-1">
+                                    <span class="clickable-exercise font-medium" onclick="showGraph('Bench Press')">Bench Press</span>
+                                </td>
+                                <td class="px-1 text-xs">
+                                    <div class="font-bold">3 x 10</div>
+                                    <div class="text-blue-600 font-bold" data-lift="bench" data-pct="0.70">-</div>
+                                </td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="10">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <!-- T3 -->
+                            <tr class="exercise-row" data-name="Pull Ups">
+                                <td class="py-3 px-1"><span class="clickable-exercise" onclick="showGraph('Pull Ups')">Pull Ups</span></td>
+                                <td class="px-1 text-xs">3 x Max</td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="BW" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <tr class="exercise-row" data-name="Cable Row">
+                                <td class="py-3 px-1"><span class="clickable-exercise" onclick="showGraph('Cable Row')">Cable Row</span></td>
+                                <td class="px-1 text-xs">3x12 (RPE9)</td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="12">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <div class="mt-4 flex justify-end no-print">
+                        <button onclick="saveLog('day-c', 'Day C')" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded shadow">
+                            💾 Save Day C
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- DAY D -->
+            <div class="card bg-white rounded-lg shadow-md overflow-hidden" id="day-d">
+                <div class="bg-blue-800 text-white p-3 flex justify-between items-center">
+                    <h2 class="font-bold text-lg">Day D: Lower (Deadlift Focus)</h2>
+                    <span class="text-xs bg-blue-700 px-2 py-1 rounded">Tier 1</span>
+                </div>
+                <div class="p-2 overflow-x-auto">
+                    <table class="w-full text-sm text-left">
+                        <thead class="bg-gray-50 text-gray-600 font-medium border-b">
+                            <tr>
+                                <th class="py-2 px-1 w-32">Exercise</th>
+                                <th class="py-2 px-1 w-24">Goal</th>
+                                <th class="py-2 px-1">Log (Kg / Reps / RPE)</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-100">
+                            <!-- T1 -->
+                            <tr class="exercise-row" data-name="Deadlift">
+                                <td class="py-3 px-1">
+                                    <span class="clickable-exercise font-bold text-blue-700" onclick="showGraph('Deadlift')">Deadlift</span>
+                                </td>
+                                <td class="px-1 text-xs">
+                                    <div class="font-bold">1 x 5</div>
+                                    <div class="text-blue-600 font-bold" data-lift="dead" data-pct="0.85">-</div>
+                                </td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="5">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <!-- T2 -->
+                            <tr class="exercise-row" data-name="Front Squat">
+                                <td class="py-3 px-1">
+                                    <span class="clickable-exercise font-medium" onclick="showGraph('Front Squat')">Front Squat</span>
+                                </td>
+                                <td class="px-1 text-xs">
+                                    <div class="font-bold">3 x 8</div>
+                                </td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="8">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <!-- T3 -->
+                            <tr class="exercise-row" data-name="Split Squat">
+                                <td class="py-3 px-1"><span class="clickable-exercise" onclick="showGraph('Split Squat')">Split Squat</span></td>
+                                <td class="px-1 text-xs">3x10 (RPE8)</td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="10">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <tr class="exercise-row" data-name="Calf Raise">
+                                <td class="py-3 px-1"><span class="clickable-exercise" onclick="showGraph('Calf Raise')">Calf Raise</span></td>
+                                <td class="px-1 text-xs">3x15 (RPE10)</td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="15">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <div class="mt-4 flex justify-end no-print">
+                        <button onclick="saveLog('day-d', 'Day D')" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded shadow">
+                            💾 Save Day D
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- GRAPH MODAL -->
+    <div id="graphModal" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center p-4 z-50" onclick="closeGraph()">
+        <div class="bg-white rounded-lg p-6 w-full max-w-2xl" onclick="event.stopPropagation()">
+            <div class="flex justify-between items-center mb-4">
+                <h3 id="graphTitle" class="text-xl font-bold text-gray-800">Progress</h3>
+                <button onclick="closeGraph()" class="text-gray-500 hover:text-red-500 font-bold text-xl">&times;</button>
+            </div>
+            <div class="w-full h-64 md:h-80">
+                <canvas id="progressChart"></canvas>
+            </div>
+            <p class="text-xs text-center text-gray-500 mt-2">Charts show estimated 1RM (Weight * (1 + Reps/30)) to standardize performance.</p>
+        </div>
+    </div>
+
+    <!-- TOAST NOTIFICATION -->
+    <div id="toast" class="fixed bottom-4 right-4 bg-gray-800 text-white px-6 py-3 rounded shadow-lg transform translate-y-20 opacity-0 transition-all duration-300">
+        Message
+    </div>
+
+</body>
+</html>
