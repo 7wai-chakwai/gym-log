@@ -231,7 +231,10 @@
         // Graphing 
         let chartInstance = null;
         window.showGraph = function(exerciseName) {
-            const logs = localLogs.filter(l => l.exercise === exerciseName);
+            // Special handling for Deadlift Back-off to show main Deadlift graph
+            if(exerciseName === 'Deadlift (Back-off)') exerciseName = 'Deadlift';
+
+            const logs = localLogs.filter(l => l.exercise === exerciseName || (exerciseName === 'Deadlift' && l.exercise === 'Deadlift (Back-off)'));
             
             if (logs.length === 0) {
                 showToast(`No history for ${exerciseName} yet.`);
@@ -388,6 +391,7 @@
                                 </td>
                                 <td class="px-1 text-xs">
                                     <div class="font-bold">5 x 3</div>
+                                    <div class="text-gray-500 text-[10px]">85% 1RM / RPE 8</div>
                                     <div class="text-blue-600 font-bold" data-lift="bench" data-pct="0.85">-</div>
                                 </td>
                                 <td class="px-1 flex gap-1 py-2">
@@ -403,6 +407,7 @@
                                 </td>
                                 <td class="px-1 text-xs">
                                     <div class="font-bold">3 x 8-10</div>
+                                    <div class="text-gray-500 text-[10px]">70% 1RM / RPE 7</div>
                                     <div class="text-blue-600 font-bold" data-lift="ohp" data-pct="0.70">-</div>
                                 </td>
                                 <td class="px-1 flex gap-1 py-2">
@@ -481,6 +486,7 @@
                                 </td>
                                 <td class="px-1 text-xs">
                                     <div class="font-bold">5 x 3</div>
+                                    <div class="text-gray-500 text-[10px]">85% 1RM / RPE 8</div>
                                     <div class="text-blue-600 font-bold" data-lift="squat" data-pct="0.85">-</div>
                                 </td>
                                 <td class="px-1 flex gap-1 py-2">
@@ -496,6 +502,7 @@
                                 </td>
                                 <td class="px-1 text-xs">
                                     <div class="font-bold">3 x 10</div>
+                                    <div class="text-gray-500 text-[10px]">60% Sq 1RM / RPE 7</div>
                                     <div class="text-blue-600 font-bold" data-lift="squat" data-pct="0.60">-</div>
                                 </td>
                                 <td class="px-1 flex gap-1 py-2">
@@ -520,6 +527,15 @@
                                 <td class="px-1 flex gap-1 py-2">
                                     <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
                                     <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="15">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <tr class="exercise-row" data-name="Plank / Abs">
+                                <td class="py-3 px-1"><span class="clickable-exercise" onclick="showGraph('Plank / Abs')">Plank / Abs</span></td>
+                                <td class="px-1 text-xs">3 Sets (RPE9)</td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
                                     <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
                                 </td>
                             </tr>
@@ -556,6 +572,7 @@
                                 </td>
                                 <td class="px-1 text-xs">
                                     <div class="font-bold">5 x 3</div>
+                                    <div class="text-gray-500 text-[10px]">85% 1RM / RPE 8-9</div>
                                     <div class="text-blue-600 font-bold" data-lift="ohp" data-pct="0.85">-</div>
                                 </td>
                                 <td class="px-1 flex gap-1 py-2">
@@ -571,6 +588,7 @@
                                 </td>
                                 <td class="px-1 text-xs">
                                     <div class="font-bold">3 x 10</div>
+                                    <div class="text-gray-500 text-[10px]">70% 1RM / RPE 7</div>
                                     <div class="text-blue-600 font-bold" data-lift="bench" data-pct="0.70">-</div>
                                 </td>
                                 <td class="px-1 flex gap-1 py-2">
@@ -595,6 +613,24 @@
                                 <td class="px-1 flex gap-1 py-2">
                                     <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
                                     <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="12">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <tr class="exercise-row" data-name="Bicep Curls">
+                                <td class="py-3 px-1"><span class="clickable-exercise" onclick="showGraph('Bicep Curls')">Bicep Curls</span></td>
+                                <td class="px-1 text-xs">3x12 (RPE9)</td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="12">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <tr class="exercise-row" data-name="Face Pulls">
+                                <td class="py-3 px-1"><span class="clickable-exercise" onclick="showGraph('Face Pulls')">Face Pulls</span></td>
+                                <td class="px-1 text-xs">3x15 (RPE8)</td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="15">
                                     <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
                                 </td>
                             </tr>
@@ -631,11 +667,28 @@
                                 </td>
                                 <td class="px-1 text-xs">
                                     <div class="font-bold">1 x 5</div>
+                                    <div class="text-gray-500 text-[10px]">85% 1RM / RPE 8.5</div>
                                     <div class="text-blue-600 font-bold" data-lift="dead" data-pct="0.85">-</div>
                                 </td>
                                 <td class="px-1 flex gap-1 py-2">
                                     <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
                                     <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="5">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <!-- T1 Backoff -->
+                            <tr class="exercise-row" data-name="Deadlift (Back-off)">
+                                <td class="py-3 px-1">
+                                    <span class="clickable-exercise font-bold text-blue-700" onclick="showGraph('Deadlift')">DL Back-off</span>
+                                </td>
+                                <td class="px-1 text-xs">
+                                    <div class="font-bold">2 x 3</div>
+                                    <div class="text-gray-500 text-[10px]">80% 1RM</div>
+                                    <div class="text-blue-600 font-bold" data-lift="dead" data-pct="0.80">-</div>
+                                </td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="3">
                                     <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
                                 </td>
                             </tr>
@@ -646,6 +699,7 @@
                                 </td>
                                 <td class="px-1 text-xs">
                                     <div class="font-bold">3 x 8</div>
+                                    <div class="text-gray-500 text-[10px]">RPE 8</div>
                                 </td>
                                 <td class="px-1 flex gap-1 py-2">
                                     <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
@@ -669,6 +723,15 @@
                                 <td class="px-1 flex gap-1 py-2">
                                     <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
                                     <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center" value="15">
+                                    <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                </td>
+                            </tr>
+                            <tr class="exercise-row" data-name="Hanging Leg Raises">
+                                <td class="py-3 px-1"><span class="clickable-exercise" onclick="showGraph('Hanging Leg Raises')">Hanging Leg Raises</span></td>
+                                <td class="px-1 text-xs">3 Sets (RPE9)</td>
+                                <td class="px-1 flex gap-1 py-2">
+                                    <input type="number" placeholder="Kg" class="log-weight w-16 bg-gray-50 border border-gray-300 rounded px-1 text-center">
+                                    <input type="number" placeholder="Reps" class="log-reps w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
                                     <input type="number" placeholder="RPE" class="log-rpe w-12 bg-gray-50 border border-gray-300 rounded px-1 text-center">
                                 </td>
                             </tr>
